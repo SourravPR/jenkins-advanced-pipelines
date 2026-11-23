@@ -1,0 +1,117 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'STUDENT_PREFIX', defaultValue: 'instructor-demo', description: 'Unique prefix for AWS resources')
+        choice(name: 'ACTION_MODE', choices: ['PROVISION', 'DETECT_AND_REMEDIATE', 'DESTROY'], description: 'Select pipeline operation')
+        booleanParam(name: 'AUTO_REMEDIATE', defaultValue: true, description: 'Automatically revert unauthorized AWS console changes when drift is detected')
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = 'ap-south-1'
+        TF_IN_AUTOMATION   = 'true'
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Init & Validate') {
+            steps {
+                dir('terraform') {
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
+                        terraform init -input=false
+                        terraform validate
+                    '''
+                }
+            }
+        }
+
+        stage('Provision Baseline Infrastructure') {
+            when {
+                expression { params.ACTION_MODE == 'PROVISION' }
+            }
+            steps {
+                dir('terraform') {
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
+                        terraform apply -auto-approve -var="student_prefix=$env:STUDENT_PREFIX"
+                        
+                        # Safely write PEM key via PowerShell without Terraform local_file lock
+                        $keyPath = "$env:WORKSPACE\\$env:STUDENT_PREFIX-key.pem"
+                        terraform output -raw private_key_pem | Out-File -FilePath $keyPath -Encoding ascii
+                        Write-Host "Baseline infrastructure provisioned. Key saved to $keyPath"
+                    '''
+                }
+            }
+        }
+
+        stage('Drift Detection & Auto-Remediation') {
+            when {
+                expression { params.ACTION_MODE == 'DETECT_AND_REMEDIATE' }
+            }
+            steps {
+                dir('terraform') {
+                    powershell '''
+                        # Do not set Stop before checking $LASTEXITCODE because exit code 2 is expected on drift
+                        $ErrorActionPreference = "Continue"
+                        
+                        Write-Host "=== Running Terraform Drift Scan ==="
+                        terraform plan -detailed-exitcode -out=drift.tfplan -var="student_prefix=$env:STUDENT_PREFIX"
+                        $exitCode = $LASTEXITCODE
+
+                        if ($exitCode -eq 0) {
+                            Write-Host "[OK] ZERO DRIFT DETECTED. AWS infrastructure matches Terraform state."
+                        }
+                        elseif ($exitCode -eq 2) {
+                            Write-Warning "[ALERT] INFRASTRUCTURE DRIFT DETECTED! Unauthorized changes found in AWS."
+                            
+                            if ($env:AUTO_REMEDIATE -eq "true") {
+                                Write-Host "=== Auto-Remediation Enabled: Reverting AWS to Terraform State ==="
+                                $ErrorActionPreference = "Stop"
+                                terraform apply -auto-approve drift.tfplan
+                                Write-Host "[REMEDIATED] Unauthorized AWS changes have been rolled back."
+                            }
+                            else {
+                                Write-Error "Drift detected and AUTO_REMEDIATE is false. Failing pipeline for manual review."
+                                exit 1
+                            }
+                        }
+                        else {
+                            Write-Error "Terraform plan encountered a fatal error (Exit Code: $exitCode)."
+                            exit $exitCode
+                        }
+                    '''
+                }
+            }
+        }
+
+        stage('Destroy Lab Resources') {
+            when {
+                expression { params.ACTION_MODE == 'DESTROY' }
+            }
+            steps {
+                dir('terraform') {
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
+                        terraform destroy -auto-approve -var="student_prefix=$env:STUDENT_PREFIX"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir('terraform') {
+                powershell '''
+                    if (Test-Path "drift.tfplan") { Remove-Item "drift.tfplan" -Force }
+                '''
+            }
+        }
+    }
+}

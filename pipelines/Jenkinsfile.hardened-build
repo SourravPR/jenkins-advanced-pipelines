@@ -1,0 +1,98 @@
+pipeline {
+    agent any
+
+    environment {
+        VULN_IMAGE     = 'demo-app:vulnerable'
+        HARDENED_IMAGE = 'demo-app:hardened'
+        CONTAINER_NAME = 'hardened-verify-test'
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Vulnerable vs Hardened Images') {
+            steps {
+                dir('app') {
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
+                        Write-Host "=== 1. Building Standard (Vulnerable) Image ==="
+                        docker build -f Dockerfile.vulnerable -t $env:VULN_IMAGE .
+
+                        Write-Host "=== 2. Building Multi-Stage Hardened Image ==="
+                        docker build -f Dockerfile.hardened -t $env:HARDENED_IMAGE .
+                    '''
+                }
+            }
+        }
+
+        stage('Image Size & Attack Surface Comparison') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = "Stop"
+                    Write-Host "================ IMAGE SIZE COMPARISON ================"
+                    docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}" | Select-String -Pattern "REPOSITORY|demo-app"
+
+                    Write-Host "`n================ USER PRIVILEGE AUDIT ================"
+                    $vulnUser = docker inspect --format='{{.Config.User}}' $env:VULN_IMAGE
+                    if ([string]::IsNullOrWhiteSpace($vulnUser)) { $vulnUser = "root (UID 0 - UNSAFE)" }
+                    $hardenedUser = docker inspect --format='{{.Config.User}}' $env:HARDENED_IMAGE
+
+                    Write-Host "Vulnerable Image Runtime User : $vulnUser"
+                    Write-Host "Hardened Image Runtime User   : $hardenedUser"
+
+                    if ($hardenedUser -ne "node") {
+                        Write-Error "Security Gate Failed: Hardened container must run as non-root user 'node'!"
+                        exit 1
+                    }
+                '''
+            }
+        }
+
+        stage('Runtime Hardening & Health Verification') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = "Stop"
+                    
+                    # Clean up any leftover container from prior runs
+                    docker rm -f $env:CONTAINER_NAME 2>$null
+
+                    Write-Host "=== Starting Hardened Container with Read-Only Root Filesystem ==="
+                    docker run -d --name $env:CONTAINER_NAME -p 3005:3000 --read-only $env:HARDENED_IMAGE
+
+                    Start-Sleep -Seconds 3
+
+                    Write-Host "=== Probing /health Endpoint ==="
+                    $response = Invoke-RestMethod -Uri "http://localhost:3005/health" -Method Get
+                    $response | ConvertTo-Json
+
+                    if ($response.uid -eq 0) {
+                        Write-Error "CRITICAL: Container process is running as UID 0 (root)!"
+                        exit 1
+                    }
+
+                    Write-Host "=== Verifying Package Manager Removal (Shell Hardening) ==="
+                    $ErrorActionPreference = "Continue"
+                    docker exec $env:CONTAINER_NAME which npm
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Error "Security Gate Failed: npm binary still exists inside runtime container!"
+                        exit 1
+                    } else {
+                        Write-Host "[PASS] npm/npx successfully stripped from runtime image."
+                    }
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            powershell '''
+                docker rm -f $env:CONTAINER_NAME 2>$null
+            '''
+        }
+    }
+}

@@ -1,0 +1,34 @@
+# ==========================================
+# STAGE 1: Dependency Builder
+# ==========================================
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+COPY package*.json ./
+
+# Install ONLY production dependencies (excludes nodemon and dev tools)
+RUN npm install --omit=dev --no-audit --no-fund
+
+# ==========================================
+# STAGE 2: Minimal Hardened Runtime
+# ==========================================
+FROM node:20-alpine AS runtime
+
+# Remove npm/yarn package managers from runtime image to shrink attack surface
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+WORKDIR /app
+
+# Copy only production node_modules and application code from builder
+COPY --from=builder --chown=node:node /build/node_modules ./node_modules
+COPY --chown=node:node server.js ./
+
+# Drop root privileges: run strictly as built-in unprivileged 'node' user (UID 1000)
+USER node
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+CMD ["node", "server.js"]
