@@ -6,7 +6,10 @@ pipeline {
         choice(name: 'ACTION_MODE', choices: ['PROVISION', 'DETECT_AND_REMEDIATE', 'DESTROY'], description: 'Select pipeline operation')
         booleanParam(name: 'AUTO_REMEDIATE', defaultValue: true, description: 'Automatically revert unauthorized AWS console changes when drift is detected')
     }
-
+    tools {
+        terraform 'terraform-1.17'
+    }
+    
     environment {
         AWS_DEFAULT_REGION = 'ap-south-1'
         TF_IN_AUTOMATION   = 'true'
