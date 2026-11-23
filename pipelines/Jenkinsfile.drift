@@ -68,7 +68,7 @@ pipeline {
                         $ErrorActionPreference = "Continue"
                         
                         Write-Host "=== Running Terraform Drift Scan ==="
-                        terraform plan -detailed-exitcode -out=drift.tfplan
+                        terraform --% plan -detailed-exitcode -out=drift.tfplan
                         $exitCode = $LASTEXITCODE
 
                         if ($exitCode -eq 0) {
@@ -80,7 +80,7 @@ pipeline {
                             if ($env:AUTO_REMEDIATE -eq "true") {
                                 Write-Host "=== Auto-Remediation Enabled: Reverting AWS to Terraform State ==="
                                 $ErrorActionPreference = "Stop"
-                                terraform apply -auto-approve drift.tfplan
+                                terraform --% apply -auto-approve drift.tfplan
                                 Write-Host "[REMEDIATED] Unauthorized AWS changes have been rolled back."
                             }
                             else {
