@@ -6,6 +6,7 @@ pipeline {
         choice(name: 'ACTION_MODE', choices: ['PROVISION', 'DETECT_AND_REMEDIATE', 'DESTROY'], description: 'Select pipeline operation')
         booleanParam(name: 'AUTO_REMEDIATE', defaultValue: true, description: 'Automatically revert unauthorized AWS console changes when drift is detected')
     }
+
     tools {
         terraform 'terraform-1.17'
     }
@@ -13,8 +14,9 @@ pipeline {
     environment {
         AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
         AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
-        AWS_DEFAULT_REGION = 'ap-south-1'
-        TF_IN_AUTOMATION   = 'true'
+        AWS_DEFAULT_REGION    = 'ap-south-1'
+        TF_IN_AUTOMATION      = 'true'
+        TF_VAR_student_prefix = "${params.STUDENT_PREFIX}"
     }
 
     stages {
@@ -44,7 +46,7 @@ pipeline {
                 dir('terraform') {
                     powershell '''
                         $ErrorActionPreference = "Stop"
-                        terraform apply -auto-approve -var="student_prefix=$env:STUDENT_PREFIX"
+                        terraform apply -auto-approve
                         
                         # Safely write PEM key via PowerShell without Terraform local_file lock
                         $keyPath = "$env:WORKSPACE\\$env:STUDENT_PREFIX-key.pem"
@@ -66,7 +68,7 @@ pipeline {
                         $ErrorActionPreference = "Continue"
                         
                         Write-Host "=== Running Terraform Drift Scan ==="
-                        terraform plan -detailed-exitcode -out=drift.tfplan -var="student_prefix=$env:STUDENT_PREFIX"
+                        terraform plan -detailed-exitcode -out=drift.tfplan
                         $exitCode = $LASTEXITCODE
 
                         if ($exitCode -eq 0) {
@@ -103,7 +105,7 @@ pipeline {
                 dir('terraform') {
                     powershell '''
                         $ErrorActionPreference = "Stop"
-                        terraform destroy -auto-approve -var="student_prefix=$env:STUDENT_PREFIX"
+                        terraform destroy -auto-approve
                     '''
                 }
             }
